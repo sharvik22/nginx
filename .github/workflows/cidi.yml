@@ -36,6 +36,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=latest  # ← Фиксируем latest
             type=ref,event=branch
             type=semver,pattern={{version}}
 
