@@ -9,6 +9,8 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: sharvik40/nginx-app
+  K8S_NAMESPACE: default
+  K8S_DEPLOYMENT: nginx-app
 
 jobs:
   build-and-push:
@@ -35,13 +37,43 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
-            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           no-cache: true
+
+  deploy-to-k8s:
+    name: Deploy to Kubernetes
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.K8S_CONFIG }}" | base64 -d > ~/.kube/config
+          kubectl config use-context ${{ secrets.K8S_CONTEXT }}
+
+      - name: Get tag version
+        id: get_tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl -n ${{ env.K8S_NAMESPACE }} set image \
+            deployment/${{ env.K8S_DEPLOYMENT }} \
+            nginx=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get_tag.outputs.TAG }}
+          kubectl -n ${{ env.K8S_NAMESPACE }} rollout status \
+            deployment/${{ env.K8S_DEPLOYMENT }}
