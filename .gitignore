@@ -1,0 +1,17 @@
+# .gitignore
+# Terraform
+terraform.tfvars
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Docker
+docker.env
+
+# Скрипты (если не хотите пушить .sh)
+*.sh
+
+# IDE
+.idea/
+.vscode/

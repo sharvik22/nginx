@@ -1,0 +1,17 @@
+version: '3.3'
+
+services:
+  nginx-app:
+    image: sharvik40/nginx-app:latest
+    container_name: nginx-app
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      - TZ=Europe/Moscow
+    networks:
+      - nginx-net
+
+networks:
+  nginx-net:
+    driver: bridge
