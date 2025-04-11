@@ -1,0 +1,56 @@
+{
+  "version": 4,
+  "terraform_version": "1.8.4",
+  "serial": 5,
+  "lineage": "8e18760b-f357-9dff-7266-6e95176841da",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "docker_image",
+      "name": "local",
+      "provider": "provider[\"registry.terraform.io/kreuzwerker/docker\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "build": [],
+            "force_remove": null,
+            "id": "sha256:cf38f1db0a45572216b37c4ced7494ac70437ace578ce8b02bd4957a09a46b57sharvik40/nginx-app:latest",
+            "image_id": "sha256:cf38f1db0a45572216b37c4ced7494ac70437ace578ce8b02bd4957a09a46b57",
+            "keep_locally": true,
+            "name": "sharvik40/nginx-app:latest",
+            "platform": null,
+            "pull_triggers": null,
+            "repo_digest": "sharvik40/nginx-app@sha256:ccfe9d7956008e67b53abeb4bff5d1b0a6b39293e70d293ff165e1c3fbbe404a",
+            "triggers": null
+          },
+          "sensitive_attributes": [],
+          "private": "bnVsbA=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "null_resource",
+      "name": "docker_push",
+      "provider": "provider[\"registry.terraform.io/hashicorp/null\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "4918299882470037274",
+            "triggers": {
+              "image_id": "sha256:cf38f1db0a45572216b37c4ced7494ac70437ace578ce8b02bd4957a09a46b57sharvik40/nginx-app:latest"
+            }
+          },
+          "sensitive_attributes": [],
+          "dependencies": [
+            "docker_image.local"
+          ]
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
