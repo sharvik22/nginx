@@ -15,3 +15,4 @@ docker.env
 # IDE
 .idea/
 .vscode/
+authorized_key.json
