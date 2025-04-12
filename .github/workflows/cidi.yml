@@ -44,18 +44,29 @@ jobs:
           echo "${{ secrets.K8S_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
 
-      - name: Full deployment update
+      - name: Update deployment (safe method)
         run: |
-          set -x  # Включим отладку
+          set -x  # Режим отладки
           
-          # 1. Обновляем образ (исправленный JSON с полной структурой)
-          kubectl patch deployment/${{ env.K8S_DEPLOYMENT }} \
+          # 1. Получаем текущий deployment и сохраняем в файл
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
-            --type=merge \
-            --patch='{"spec":{"template":{"spec":{"containers":[{"name":"nginx-app","image":"'"${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"'","imagePullPolicy":"Always"}]}}}' \
+            -o yaml > deployment.yaml
+          
+          # 2. Обновляем версию образа в файле
+          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}|g" deployment.yaml
+          
+          # 3. Применяем обновленный deployment
+          kubectl apply -f deployment.yaml \
+            -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify
           
-          # 2. Проверяем статус
+          # 4. Принудительно обновляем поды
+          kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --insecure-skip-tls-verify
+          
+          # 5. Проверяем статус
           kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify \
@@ -63,9 +74,10 @@ jobs:
 
       - name: Verify deployment
         run: |
-          echo "=== Current Deployment ==="
-          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o yaml | grep -A 5 image:
+          echo "=== Deployment Details ==="
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o wide
           
           echo ""
-          echo "=== Running Pods ==="
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}'
+          echo "=== Pods Images ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app \
+            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}'
