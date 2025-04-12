@@ -48,11 +48,11 @@ jobs:
         run: |
           set -x  # Включим отладку
           
-          # 1. Обновляем образ
+          # 1. Обновляем образ (исправленный JSON с полной структурой)
           kubectl patch deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --type=merge \
-            --patch='{"spec":{"template":{"spec":{"containers":[{"name":"'"${{ env.CONTAINER_NAME }}"'","image":"'"${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"'","imagePullPolicy":"Always"}]}}}' \
+            --patch='{"spec":{"template":{"spec":{"containers":[{"name":"nginx-app","image":"'"${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"'","imagePullPolicy":"Always"}]}}}' \
             --insecure-skip-tls-verify
           
           # 2. Проверяем статус
