@@ -4,9 +4,9 @@ name: Docker Build and Deploy
 on:
   push:
     branches:
-      - main    # Триггер на коммиты в main ветку
+      - main
     tags:
-      - "v*.*.*"  # Триггер на создание тегов
+      - "v*.*.*"
 
 env:
   REGISTRY: docker.io
@@ -35,13 +35,11 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          labels: |
-            commit=${{ github.sha }}
-            build.date=${{ github.run_number }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
 
   deploy:
     needs: build-and-push
-    if: startsWith(github.ref, 'refs/tags/')  # Деплой только для тегов
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: azure/setup-kubectl@v3
@@ -53,20 +51,48 @@ jobs:
           chmod 600 ~/.kube/config
           echo "  insecure-skip-tls-verify: true" >> ~/.kube/config
 
-      - name: Safe deployment update
+      - name: Full deployment update
         run: |
+          # 1. Устанавливаем Always pull policy
+          kubectl patch deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --type=merge \
+            --patch='{"spec":{"template":{"spec":{"containers":[{"name":"nginx-app","imagePullPolicy":"Always"}]}}}' \
+            --insecure-skip-tls-verify
+          
+          # 2. Обновляем образ
           kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
             ${{ env.CONTAINER_NAME }}=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify
           
+          # 3. Принудительно перезапускаем поды
+          kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --insecure-skip-tls-verify
+          
+          # 4. Увеличиваем таймаут и добавляем проверки
           kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify \
-            --timeout=300s
+            --timeout=600s  # Увеличенный таймаут
 
-
-
+      - name: Verify deployment
+        run: |
+          # Проверяем, что все поды используют новый образ
+          DESIRED_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+          CURRENT_IMAGES=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app \
+            -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}' | uniq)
+          
+          if [ "$CURRENT_IMAGES" != "$DESIRED_IMAGE" ]; then
+            echo "ERROR: Deployment failed!"
+            echo "Expected: $DESIRED_IMAGE"
+            echo "Current: $CURRENT_IMAGES"
+            kubectl describe pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app
+            exit 1
+          else
+            echo "SUCCESS: All pods running $DESIRED_IMAGE"
+          fi
 
 
 
