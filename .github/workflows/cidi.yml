@@ -3,8 +3,10 @@ name: Docker Build and Deploy
 
 on:
   push:
+    branches:
+      - main    # Триггер на коммиты в main ветку
     tags:
-      - "v*.*.*"
+      - "v*.*.*"  # Триггер на создание тегов
 
 env:
   REGISTRY: docker.io
@@ -30,64 +32,134 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          labels: |
+            commit=${{ github.sha }}
+            build.date=${{ github.run_number }}
 
   deploy:
     needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/')  # Деплой только для тегов
     runs-on: ubuntu-latest
     steps:
       - uses: azure/setup-kubectl@v3
       
-      - name: Setup kubeconfig
+      - name: Configure kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.K8S_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
-          
-          # Добавляем параметр для игнорирования TLS
           echo "  insecure-skip-tls-verify: true" >> ~/.kube/config
 
-      - name: Update deployment (safe method)
+      - name: Safe deployment update
         run: |
-          set -x  # Режим отладки
-          
-          # 1. Получаем текущий deployment
-          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
-            -n ${{ env.K8S_NAMESPACE }} \
-            -o yaml > deployment.yaml \
-            --insecure-skip-tls-verify
-          
-          # 2. Обновляем версию образа
-          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}|g" deployment.yaml
-          
-          # 3. Применяем обновленный deployment
-          kubectl apply -f deployment.yaml \
+          kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
+            ${{ env.CONTAINER_NAME }}=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify
           
-          # 4. Принудительный перезапуск
-          kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --insecure-skip-tls-verify
-          
-          # 5. Проверка статуса
           kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify \
             --timeout=300s
 
-      - name: Verify deployment
-        run: |
-          echo "=== Deployment Details ==="
-          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
-            -n ${{ env.K8S_NAMESPACE }} \
-            -o wide \
-            --insecure-skip-tls-verify
-          
-          echo ""
-          echo "=== Pods Images ==="
-          kubectl get pods \
-            -n ${{ env.K8S_NAMESPACE }} \
-            -l app=nginx-app \
-            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}' \
-            --insecure-skip-tls-verify
+
+
+
+
+
+#######################################
+#name: Docker Build and Deploy
+#
+#on:
+#  push:
+#    tags:
+#      - "v*.*.*"
+#
+#env:
+#  REGISTRY: docker.io
+#  IMAGE_NAME: sharvik40/nginx-app
+#  K8S_DEPLOYMENT: nginx-app-deployment
+#  K8S_NAMESPACE: default
+#  CONTAINER_NAME: nginx-app
+#
+#jobs:
+#  build-and-push:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v4
+#      
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@v2
+#        with:
+#          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+#          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+#
+#      - name: Build and push
+#        uses: docker/build-push-action@v4
+#        with:
+#          context: .
+#          push: true
+#          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+#
+#  deploy:
+#    needs: build-and-push
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: azure/setup-kubectl@v3
+#      
+#      - name: Setup kubeconfig
+#        run: |
+#          mkdir -p ~/.kube
+#          echo "${{ secrets.K8S_CONFIG }}" > ~/.kube/config
+#          chmod 600 ~/.kube/config
+#          
+#          # Добавляем параметр для игнорирования TLS
+#          echo "  insecure-skip-tls-verify: true" >> ~/.kube/config
+#
+#      - name: Update deployment (safe method)
+#        run: |
+#          set -x  # Режим отладки
+#          
+#          # 1. Получаем текущий deployment
+#          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            -o yaml > deployment.yaml \
+#            --insecure-skip-tls-verify
+#          
+#          # 2. Обновляем версию образа
+#          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}|g" deployment.yaml
+#          
+#          # 3. Применяем обновленный deployment
+#          kubectl apply -f deployment.yaml \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            --insecure-skip-tls-verify
+#          
+#          # 4. Принудительный перезапуск
+#          kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            --insecure-skip-tls-verify
+#          
+#          # 5. Проверка статуса
+#          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            --insecure-skip-tls-verify \
+#            --timeout=300s
+#
+#      - name: Verify deployment
+#        run: |
+#          echo "=== Deployment Details ==="
+#          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            -o wide \
+#            --insecure-skip-tls-verify
+#          
+#          echo ""
+#          echo "=== Pods Images ==="
+#          kubectl get pods \
+#            -n ${{ env.K8S_NAMESPACE }} \
+#            -l app=nginx-app \
+#            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}' \
+#            --insecure-skip-tls-verify
