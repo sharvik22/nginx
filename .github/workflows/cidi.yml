@@ -3,228 +3,106 @@ name: Docker Build and Deploy
 
 on:
   push:
-    branches:
-      - "main"
     tags:
       - "v*.*.*"
 
 env:
   REGISTRY: docker.io
   IMAGE_NAME: sharvik40/nginx-app
-  K8S_DEPLOYMENT: nginx-app-deployment # Имя развертывания в кластере
-  K8S_NAMESPACE: default              # Пространство имен по умолчанию
-  CONTAINER_NAME: nginx               # Имя контейнера в развертывании
+  K8S_DEPLOYMENT: nginx-app-deployment
+  K8S_NAMESPACE: default
+  CONTAINER_NAME: nginx-app
 
 jobs:
   build-and-push:
-    name: Build and Push Docker Image
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
+      
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=tag
-
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          labels: version=${{ github.ref_name }}
 
-  deploy-to-k8s:
-    name: Deploy to Kubernetes
+  deploy:
     needs: build-and-push
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-
     steps:
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-
-      - name: Configure kubeconfig
+      - uses: azure/setup-kubectl@v3
+      
+      - name: Setup kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.K8S_CONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
 
-      - name: Debug kubeconfig
+      - name: Debug cluster info
         run: |
-          echo "Kubeconfig contents:"
-          cat ~/.kube/config
-
-      - name: Verify cluster access
-        run: |
-          echo "Checking cluster info..."
+          echo "=== Cluster Info ==="
           kubectl cluster-info --insecure-skip-tls-verify
+          echo ""
+          echo "=== Nodes ==="
+          kubectl get nodes --insecure-skip-tls-verify
+          echo ""
+          echo "=== Current Deployment ==="
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o wide --insecure-skip-tls-verify
+          echo ""
+          echo "=== Current Pods ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app -o wide --insecure-skip-tls-verify
 
-      - name: Verify deployment exists
+      - name: Force update deployment
         run: |
-          echo "Checking deployment in namespace ${{ env.K8S_NAMESPACE }}"
-          kubectl get deployments -n ${{ env.K8S_NAMESPACE }} --insecure-skip-tls-verify
+          echo "=== Forcing deployment update ==="
+          echo "New image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+          
+          # 1. Устанавливаем Always pull policy
+          kubectl patch deployment ${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --patch '{"spec":{"template":{"spec":{"containers":[{"name":"${{ env.CONTAINER_NAME }}","imagePullPolicy":"Always"}]}}}}' \
+            --insecure-skip-tls-verify
+          
+          # 2. Обновляем образ
+          kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
+            ${{ env.CONTAINER_NAME }}=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --insecure-skip-tls-verify
+          
+          # 3. Перезапускаем поды
+          kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --insecure-skip-tls-verify
 
-      - name: Deploy with version tag
+      - name: Verify update
         run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          # Проверяем, существует ли развертывание
-          if ! kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} --insecure-skip-tls-verify; then
-            echo "Deployment not found. Creating it..."
-            cat <<EOF | kubectl apply -f - --insecure-skip-tls-verify
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: ${{ env.K8S_DEPLOYMENT }}
-              namespace: ${{ env.K8S_NAMESPACE }}
-            spec:
-              replicas: 2
-              selector:
-                matchLabels:
-                  app: nginx
-              template:
-                metadata:
-                  labels:
-                    app: nginx
-                spec:
-                  containers:
-                  - name: ${{ env.CONTAINER_NAME }}
-                    image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG
-                    ports:
-                    - containerPort: 80
-            EOF
-          else
-            # Обновляем образ в существующем развертывании
-            kubectl -n ${{ env.K8S_NAMESPACE }} set image \
-              deployment/${{ env.K8S_DEPLOYMENT }} \
-              ${{ env.CONTAINER_NAME }}=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG --insecure-skip-tls-verify
-          fi
-          kubectl rollout status -n ${{ env.K8S_NAMESPACE }} deployment/${{ env.K8S_DEPLOYMENT }} --insecure-skip-tls-verify
+          echo "=== Waiting for rollout ==="
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --insecure-skip-tls-verify \
+            --timeout=300s
+          
+          echo ""
+          echo "=== Updated Pods ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app \
+            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.status.phase}{" ("}{.spec.containers[0].image}{")"}{"\n"}{end}' \
+            --insecure-skip-tls-verify
+          
+          echo ""
+          echo "=== Pods Details ==="
+          kubectl describe pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app --insecure-skip-tls-verify
 
-
-
-#name: Docker Build and Deploy
-#
-#on:
-#  push:
-#    branches:
-#      - "main"
-#    tags:
-#      - "v*.*.*"
-#
-#env:
-#  REGISTRY: docker.io
-#  IMAGE_NAME: sharvik40/nginx-app
-#  K8S_NAMESPACE: default
-#  K8S_DEPLOYMENT: nginx-app
-#
-#jobs:
-#  build-and-push:
-#    name: Build and Push Docker Image
-#    runs-on: ubuntu-latest
-#
-#    steps:
-#      - name: Checkout code
-#        uses: actions/checkout@v4
-#
-#      - name: Login to Docker Hub
-#        uses: docker/login-action@v2
-#        with:
-#          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-#          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-#
-#      - name: Set up Docker Buildx
-#        uses: docker/setup-buildx-action@v2
-#
-#      - name: Extract metadata
-#        id: meta
-#        uses: docker/metadata-action@v4
-#        with:
-#          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-#          tags: |
-#            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-#            type=ref,event=tag
-#
-#      - name: Build and push
-#        uses: docker/build-push-action@v4
-#        with:
-#          context: .
-#          push: true
-#          tags: ${{ steps.meta.outputs.tags }}
-#          labels: ${{ steps.meta.outputs.labels }}
-#
-#  deploy-to-k8s:
-#    name: Deploy to Kubernetes
-#    needs: build-and-push
-#    if: startsWith(github.ref, 'refs/tags/v')
-#    runs-on: ubuntu-latest
-#
-#    steps:
-#      - name: Install kubectl
-#        uses: azure/setup-kubectl@v3
-#
-#      - name: Setup SSH
-#        uses: webfactory/ssh-agent@v0.7.0
-#        with:
-#          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-#
-#      - name: Add known hosts
-#        run: |
-#          mkdir -p ~/.ssh
-#          echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-#
-#      - name: Establish SSH tunnel
-#        run: |
-#          ssh -o StrictHostKeyChecking=no -fN -L 6443:localhost:6443 ubuntu@51.250.87.108 &
-#          sleep 10
-#          netstat -tulnp | grep 6443 || exit 1
-#
-#      - name: Configure kubeconfig
-#        run: |
-#          mkdir -p ~/.kube
-#          cat <<EOF > ~/.kube/config
-#          apiVersion: v1
-#          clusters:
-#          - cluster:
-#              certificate-authority-data: ${{ secrets.K8S_CA }}
-#              server: https://localhost:6443
-#            name: yc-cluster
-#          contexts:
-#          - context:
-#              cluster: yc-cluster
-#              user: yc-user
-#            name: yc-context
-#          current-context: yc-context
-#          kind: Config
-#          users:
-#          - name: yc-user
-#            user:
-#              client-certificate-data: ${{ secrets.K8S_CLIENT_CERT }}
-#              client-key-data: ${{ secrets.K8S_CLIENT_KEY }}
-#          EOF
-#
-#      - name: Verify cluster access
-#        run: kubectl cluster-info
-#
-#      - name: Deploy with version tag
-#        run: |
-#          TAG=${GITHUB_REF#refs/tags/v}
-#          kubectl -n ${{ env.K8S_NAMESPACE }} set image \
-#            deployment/${{ env.K8S_DEPLOYMENT }} \
-#            nginx=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG
-#          kubectl rollout status -n ${{ env.K8S_NAMESPACE }} deployment/${{ env.K8S_DEPLOYMENT }}
+      - name: Final verification
+        run: |
+          echo "=== Final Deployment State ==="
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o yaml --insecure-skip-tls-verify | grep -A 5 image:
+          echo ""
+          echo "=== Image Pull Secrets ==="
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o yaml --insecure-skip-tls-verify | grep -A 3 imagePullSecrets
