@@ -43,17 +43,21 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.K8S_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
+          
+          # Добавляем параметр для игнорирования TLS
+          echo "  insecure-skip-tls-verify: true" >> ~/.kube/config
 
       - name: Update deployment (safe method)
         run: |
           set -x  # Режим отладки
           
-          # 1. Получаем текущий deployment и сохраняем в файл
+          # 1. Получаем текущий deployment
           kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
-            -o yaml > deployment.yaml
+            -o yaml > deployment.yaml \
+            --insecure-skip-tls-verify
           
-          # 2. Обновляем версию образа в файле
+          # 2. Обновляем версию образа
           sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}|g" deployment.yaml
           
           # 3. Применяем обновленный deployment
@@ -61,12 +65,12 @@ jobs:
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify
           
-          # 4. Принудительно обновляем поды
+          # 4. Принудительный перезапуск
           kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify
           
-          # 5. Проверяем статус
+          # 5. Проверка статуса
           kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
             -n ${{ env.K8S_NAMESPACE }} \
             --insecure-skip-tls-verify \
@@ -75,9 +79,15 @@ jobs:
       - name: Verify deployment
         run: |
           echo "=== Deployment Details ==="
-          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} -o wide
+          kubectl get deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -o wide \
+            --insecure-skip-tls-verify
           
           echo ""
           echo "=== Pods Images ==="
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=nginx-app \
-            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}'
+          kubectl get pods \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -l app=nginx-app \
+            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.containers[0].image}{"\n"}{end}' \
+            --insecure-skip-tls-verify
