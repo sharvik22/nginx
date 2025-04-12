@@ -1,85 +1,81 @@
 ---
-name: Docker Build and Deploy
-
-on:
-  push:
-    branches: [main]
-    tags: ['v*.*.*']
-
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: sharvik40/nginx-app
-  K8S_NAMESPACE: default
-  K8S_DEPLOYMENT: nginx-app
-  SSH_MASTER_IP: "51.250.87.108"  # Ваш внешний IP мастера
-  LOCAL_PORT: "16443"  # Используем альтернативный порт
-
-jobs:
-  build-and-push:
-    name: Build and Push Docker Image
-    runs-on: ubuntu-latest
-    
-    steps:
-      [Previous steps remain unchanged...]
-
-  deploy-to-k8s:
-    name: Deploy to Kubernetes
-    needs: build-and-push
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-client netcat
-
-      - name: Setup SSH tunnel
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          
-          # Добавляем хост в known_hosts
-          ssh-keyscan -H ${{ env.SSH_MASTER_IP }} >> ~/.ssh/known_hosts
-          
-          # Запускаем туннель на альтернативном порту
-          ssh -f -N -L ${{ env.LOCAL_PORT }}:localhost:6443 ubuntu@${{ env.SSH_MASTER_IP }} -i ~/.ssh/id_rsa
-          
-          # Проверяем туннель
-          timeout 10 bash -c 'until nc -z 127.0.0.1 ${{ env.LOCAL_PORT }}; do sleep 1; done' || exit 1
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.K8S_CONFIG }}" | base64 -d > ~/.kube/config
-          
-          # Меняем server на альтернативный порт
-          sed -i 's|server: .*|server: https://127.0.0.1:${{ env.LOCAL_PORT }}|' ~/.kube/config
-          chmod 600 ~/.kube/config
-          
-          # Полная диагностика
-          echo "=== Current kubeconfig ==="
-          cat ~/.kube/config
-          echo "=== Contexts ==="
-          kubectl config get-contexts
-          echo "=== Cluster info ==="
-          kubectl cluster-info || true
-          
-          # Явное использование контекста
-          kubectl config use-context "kubernetes-admin@cluster.local" || {
-            echo "ERROR: Context not found! Available contexts:";
-            kubectl config get-contexts;
-            exit 1;
-          }
-
-      [Remaining steps remain unchanged...]
-
-      - name: Cleanup
-        if: always()
-        run: |
-          pkill -f "ssh -f -N -L ${{ env.LOCAL_PORT }}" || true
-          rm -f ~/.ssh/id_rsa
+ name: Docker Build and Deploy
+ 
+ on:
+   push:
+     branches: [main]
+     tags: ['v*.*.*']
+ 
+ env:
+   REGISTRY: docker.io
+   IMAGE_NAME: sharvik40/nginx-app
+   K8S_NAMESPACE: default
+   K8S_DEPLOYMENT: nginx-app
+ 
+ jobs:
+   build-and-push:
+     name: Build and Push Docker Image
+     runs-on: ubuntu-latest
+ 
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v4
+ 
+       - name: Login to Docker Hub
+         uses: docker/login-action@v2
+         with:
+           username: ${{ secrets.DOCKER_HUB_USERNAME }}
+           password: ${{ secrets.DOCKER_HUB_TOKEN }}
+ 
+       - name: Set up Docker Buildx
+         uses: docker/setup-buildx-action@v2
+ 
+       - name: Extract metadata
+         id: meta
+         uses: docker/metadata-action@v4
+         with:
+           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+           tags: |
+             type=raw,value=latest
+             type=ref,event=branch
+             type=semver,pattern={{version}}
+             type=semver,pattern={{major}}.{{minor}}
+             type=semver,pattern={{major}}
+ 
+       - name: Build and push
+         uses: docker/build-push-action@v4
+         with:
+           context: .
+           push: true
+           push: ${{ github.event_name != 'pull_request' }}
+           tags: ${{ steps.meta.outputs.tags }}
+           labels: ${{ steps.meta.outputs.labels }}
+           no-cache: true
+ 
+   deploy-to-k8s:
+     name: Deploy to Kubernetes
+     needs: build-and-push
+     if: startsWith(github.ref, 'refs/tags/v')
+     runs-on: ubuntu-latest
+     
+     steps:
+       - name: Install kubectl
+         uses: azure/setup-kubectl@v3
+ 
+       - name: Configure kubeconfig
+         run: |
+           mkdir -p ~/.kube
+           echo "${{ secrets.K8S_CONFIG }}" | base64 -d > ~/.kube/config
+           kubectl config use-context ${{ secrets.K8S_CONTEXT }}
+ 
+       - name: Get tag version
+         id: get_tag
+         run: echo "TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+ 
+       - name: Deploy to Kubernetes
+         run: |
+           kubectl -n ${{ env.K8S_NAMESPACE }} set image \
+             deployment/${{ env.K8S_DEPLOYMENT }} \
+             nginx=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get_tag.outputs.TAG }}
+           kubectl -n ${{ env.K8S_NAMESPACE }} rollout status \
+             deployment/${{ env.K8S_DEPLOYMENT }}
