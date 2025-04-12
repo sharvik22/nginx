@@ -51,30 +51,58 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           no-cache: true
 
-  deploy-to-k8s:
-    name: Deploy to Kubernetes
-    needs: build-and-push
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+deploy-to-k8s:
+  name: Deploy to Kubernetes
+  needs: build-and-push
+  if: startsWith(github.ref, 'refs/tags/v')
+  runs-on: ubuntu-latest
 
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.K8S_CONFIG }}" | base64 -d > ~/.kube/config
-          kubectl config use-context ${{ secrets.K8S_CONTEXT }}
+  steps:
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
 
-      - name: Get tag version
-        id: get_tag
-        run: echo "TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.7.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to Kubernetes
-        run: |
-          kubectl -n ${{ env.K8S_NAMESPACE }} set image \
-            deployment/${{ env.K8S_DEPLOYMENT }} \
-            nginx=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get_tag.outputs.TAG }}
-          kubectl -n ${{ env.K8S_NAMESPACE }} rollout status \
-            deployment/${{ env.K8S_DEPLOYMENT }}
+    - name: Verify SSH access
+      run: ssh -o StrictHostKeyChecking=no ubuntu@51.250.87.108 "hostname"
+
+    - name: Establish SSH tunnel
+      run: |
+        ssh -fN -L 6443:localhost:6443 ubuntu@51.250.87.108 &
+        sleep 5
+        netstat -tuln | grep 6443  # Проверка туннеля
+
+    - name: Configure kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        cat <<EOF > ~/.kube/config
+        apiVersion: v1
+        clusters:
+        - cluster:
+            certificate-authority-data: ${{ secrets.K8S_CA }}
+            server: https://localhost:6443
+          name: yc-cluster
+        contexts:
+        - context:
+            cluster: yc-cluster
+            user: yc-user
+          name: yc-context
+        current-context: yc-context
+        kind: Config
+        users:
+        - name: yc-user
+          user:
+            client-certificate-data: ${{ secrets.K8S_CLIENT_CERT }}
+            client-key-data: ${{ secrets.K8S_CLIENT_KEY }}
+        EOF
+
+    - name: Deploy with tag
+      run: |
+        TAG=${GITHUB_REF#refs/tags/v}
+        kubectl -n ${{ env.K8S_NAMESPACE }} set image \
+          deployment/${{ env.K8S_DEPLOYMENT }} \
+          nginx=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG
+        kubectl rollout status -n ${{ env.K8S_NAMESPACE }} deployment/${{ env.K8S_DEPLOYMENT }}
