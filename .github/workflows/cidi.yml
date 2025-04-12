@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - "main"
+    tags:
+      - "v*.*.*"
 
 env:
   REGISTRY: docker.io
@@ -36,20 +38,16 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          no-cache: true
 
   deploy-to-k8s:
     name: Deploy to Kubernetes
@@ -66,14 +64,10 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Verify SSH access
-        run: ssh -o StrictHostKeyChecking=no ubuntu@51.250.87.108 "hostname"
-
       - name: Establish SSH tunnel
         run: |
           ssh -fN -L 6443:localhost:6443 ubuntu@51.250.87.108 &
           sleep 5
-          netstat -tuln | grep 6443  # Проверка туннеля
 
       - name: Configure kubeconfig
         run: |
@@ -99,7 +93,7 @@ jobs:
               client-key-data: ${{ secrets.K8S_CLIENT_KEY }}
           EOF
 
-      - name: Deploy with tag
+      - name: Deploy with version tag
         run: |
           TAG=${GITHUB_REF#refs/tags/v}
           kubectl -n ${{ env.K8S_NAMESPACE }} set image \
